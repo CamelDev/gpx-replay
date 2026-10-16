@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build & Release outputs
+dist/
+dist-ssr/
+build/
+*.local
+*.tsbuildinfo
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Testing & Coverage
+coverage/
+.vitest/
+
+# Editor / IDE directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# macOS / OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Optional local video renders if saved into project directory
+*.mp4
+*.webm
