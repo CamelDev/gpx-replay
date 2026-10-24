@@ -1,6 +1,61 @@
 import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
 import { VIDEO_HEIGHT, VIDEO_WIDTH } from './hudRenderer';
 
+export type VideoResolutionId = '720p' | '1080p';
+export type VideoQualityPreset = 'standard' | 'high' | 'ultra';
+
+export const VIDEO_RESOLUTION_CONFIG: Record<
+  VideoResolutionId,
+  { label: string; shortLabel: string; width: number; height: number }
+> = {
+  '720p': {
+    label: '1280 × 720 (HD)',
+    shortLabel: '720p HD',
+    width: 1280,
+    height: 720,
+  },
+  '1080p': {
+    label: '1920 × 1080 (Full HD)',
+    shortLabel: '1080p Full HD',
+    width: VIDEO_WIDTH,
+    height: VIDEO_HEIGHT,
+  },
+};
+
+export const VIDEO_QUALITY_CONFIG: Record<
+  VideoQualityPreset,
+  {
+    label: string;
+    bitrateByRes: Record<VideoResolutionId, number>;
+    keyframeIntervalSec: number;
+  }
+> = {
+  standard: {
+    label: 'Standard',
+    bitrateByRes: {
+      '720p': 6_000_000,
+      '1080p': 12_000_000,
+    },
+    keyframeIntervalSec: 2,
+  },
+  high: {
+    label: 'High',
+    bitrateByRes: {
+      '720p': 14_000_000,
+      '1080p': 25_000_000,
+    },
+    keyframeIntervalSec: 1,
+  },
+  ultra: {
+    label: 'Ultra',
+    bitrateByRes: {
+      '720p': 25_000_000,
+      '1080p': 45_000_000,
+    },
+    keyframeIntervalSec: 0.5,
+  },
+};
+
 export interface VideoExportProgress {
   phase: 'preparing' | 'rendering' | 'finalizing' | 'completed' | 'cancelled' | 'error';
   renderedFrames: number;
@@ -12,79 +67,139 @@ export interface VideoExportProgress {
 }
 
 export interface VideoExportOptions {
-  fps: 30 | 60;
+  fps?: number;
+  resolution?: VideoResolutionId;
+  quality?: VideoQualityPreset;
   totalVideoDurationSec: number;
   renderFrameAtVideoTime: (videoTimeSec: number) => Promise<HTMLCanvasElement>;
   onProgress: (progress: VideoExportProgress) => void;
   signal: AbortSignal;
 }
 
-/**
- * Checks whether the browser supports offline WebCodecs H.264 MP4 encoding at 1920x1080.
- */
-export async function supportsWebCodecsMp4(fps: number): Promise<boolean> {
+const AVC_CODEC_CANDIDATES = [
+  'avc1.64002a', // High Profile Level 4.2
+  'avc1.640028', // High Profile Level 4.0
+  'avc1.4d002a', // Main Profile Level 4.2
+  'avc1.4d0028', // Main Profile Level 4.0
+  'avc1.420028', // Baseline Profile Level 4.0
+];
+
+async function resolveSupportedEncoderConfig(
+  width: number,
+  height: number,
+  bitrate: number,
+  fps: number
+): Promise<VideoEncoderConfig | null> {
   if (typeof window === 'undefined' || !('VideoEncoder' in window)) {
-    return false;
+    return null;
   }
-  const codecsToTry = [
-    'avc1.640028', // High Profile Level 4.0 (1080p60 capable)
-    'avc1.4d0028', // Main Profile Level 4.0
-    'avc1.420028', // Baseline Profile Level 4.0
-  ];
-  for (const codec of codecsToTry) {
-    try {
-      const support = await VideoEncoder.isConfigSupported({
-        codec,
-        width: VIDEO_WIDTH,
-        height: VIDEO_HEIGHT,
-        bitrate: 12_000_000,
-        framerate: fps,
-      });
-      if (support.supported) return true;
-    } catch {
-      // try next profile
-    }
-  }
-  return false;
-}
 
-async function resolveSupportedAvcCodec(fps: number): Promise<string> {
-  const codecsToTry = ['avc1.640028', 'avc1.4d0028', 'avc1.420028'];
-  for (const codec of codecsToTry) {
-    try {
-      const support = await VideoEncoder.isConfigSupported({
+  // Try with latencyMode: 'quality' first for sharper offline encoding, then fallback to default
+  const latencyModes: (LatencyMode | undefined)[] = ['quality', undefined];
+
+  for (const latencyMode of latencyModes) {
+    for (const codec of AVC_CODEC_CANDIDATES) {
+      const candidate: VideoEncoderConfig = {
         codec,
-        width: VIDEO_WIDTH,
-        height: VIDEO_HEIGHT,
-        bitrate: 12_000_000,
+        width,
+        height,
+        bitrate,
         framerate: fps,
-      });
-      if (support.supported) return codec;
-    } catch {
-      // continue
+        ...(latencyMode ? { latencyMode } : {}),
+      };
+      try {
+        const support = await VideoEncoder.isConfigSupported(candidate);
+        if (support.supported) {
+          return candidate;
+        }
+      } catch {
+        // try next candidate
+      }
     }
   }
-  return 'avc1.420028';
+
+  return null;
 }
 
 /**
- * Exports a Full HD (1920x1080) video in the browser using WebCodecs + mp4-muxer (offline frame-by-frame)
+ * Checks whether the browser supports offline WebCodecs H.264 MP4 encoding.
+ */
+export async function supportsWebCodecsMp4(
+  fps = 30,
+  resolution: VideoResolutionId = '1080p',
+  quality: VideoQualityPreset = 'high'
+): Promise<boolean> {
+  const resCfg = VIDEO_RESOLUTION_CONFIG[resolution];
+  const bitrate = VIDEO_QUALITY_CONFIG[quality].bitrateByRes[resolution];
+  const config = await resolveSupportedEncoderConfig(
+    resCfg.width,
+    resCfg.height,
+    bitrate,
+    fps
+  );
+  return config !== null;
+}
+
+/**
+ * Exports a video in the browser using WebCodecs + mp4-muxer (offline frame-by-frame)
  * with an automatic fallback to MediaRecorder if WebCodecs is unsupported.
  */
 export async function exportFullHdVideo(
   options: VideoExportOptions
 ): Promise<{ blob: Blob; extension: 'mp4' | 'webm' }> {
-  const canUseWebCodecs = await supportsWebCodecsMp4(options.fps);
-  if (canUseWebCodecs) {
-    return exportWithWebCodecsMp4(options);
+  const fps = options.fps ?? 30;
+  const resolution = options.resolution ?? '1080p';
+  const quality = options.quality ?? 'high';
+  const resCfg = VIDEO_RESOLUTION_CONFIG[resolution];
+  const bitrate = VIDEO_QUALITY_CONFIG[quality].bitrateByRes[resolution];
+
+  const encoderConfig = await resolveSupportedEncoderConfig(
+    resCfg.width,
+    resCfg.height,
+    bitrate,
+    fps
+  );
+  if (encoderConfig) {
+    return exportWithWebCodecsMp4(options, encoderConfig, resCfg.width, resCfg.height, fps, quality);
   }
-  return exportWithMediaRecorder(options);
+  return exportWithMediaRecorder(options, resCfg.width, resCfg.height, bitrate, fps);
+}
+
+function createScaledFrameCanvas(
+  sourceCanvas: HTMLCanvasElement,
+  targetWidth: number,
+  targetHeight: number,
+  reuseCanvas: HTMLCanvasElement | null
+): HTMLCanvasElement {
+  if (
+    sourceCanvas.width === targetWidth &&
+    sourceCanvas.height === targetHeight
+  ) {
+    return sourceCanvas;
+  }
+  let scaled = reuseCanvas;
+  if (!scaled || scaled.width !== targetWidth || scaled.height !== targetHeight) {
+    scaled = document.createElement('canvas');
+    scaled.width = targetWidth;
+    scaled.height = targetHeight;
+  }
+  const ctx = scaled.getContext('2d')!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.clearRect(0, 0, targetWidth, targetHeight);
+  ctx.drawImage(sourceCanvas, 0, 0, targetWidth, targetHeight);
+  return scaled;
 }
 
 async function exportWithWebCodecsMp4(
-  options: VideoExportOptions
+  options: VideoExportOptions,
+  encoderConfig: VideoEncoderConfig,
+  targetWidth: number,
+  targetHeight: number,
+  fps: number,
+  quality: VideoQualityPreset
 ): Promise<{ blob: Blob; extension: 'mp4' }> {
-  const { fps, totalVideoDurationSec, renderFrameAtVideoTime, onProgress, signal } = options;
+  const { totalVideoDurationSec, renderFrameAtVideoTime, onProgress, signal } = options;
   const totalFrames = Math.max(1, Math.ceil(totalVideoDurationSec * fps));
   const startWallMs = performance.now();
 
@@ -98,14 +213,13 @@ async function exportWithWebCodecsMp4(
     format: 'mp4',
   });
 
-  const codec = await resolveSupportedAvcCodec(fps);
   const target = new ArrayBufferTarget();
   const muxer = new Muxer({
     target,
     video: {
       codec: 'avc',
-      width: VIDEO_WIDTH,
-      height: VIDEO_HEIGHT,
+      width: targetWidth,
+      height: targetHeight,
     },
     fastStart: 'in-memory',
   });
@@ -120,15 +234,12 @@ async function exportWithWebCodecsMp4(
     },
   });
 
-  encoder.configure({
-    codec,
-    width: VIDEO_WIDTH,
-    height: VIDEO_HEIGHT,
-    bitrate: 12_000_000,
-    framerate: fps,
-  });
+  encoder.configure(encoderConfig);
 
   const frameDurationMicros = Math.round(1_000_000 / fps);
+  const keyframeIntervalSec = VIDEO_QUALITY_CONFIG[quality].keyframeIntervalSec;
+  const keyFrameEvery = Math.max(1, Math.round(fps * keyframeIntervalSec));
+  let scaleCanvas: HTMLCanvasElement | null = null;
 
   for (let frameIdx = 0; frameIdx < totalFrames; frameIdx++) {
     if (signal.aborted) {
@@ -145,6 +256,15 @@ async function exportWithWebCodecsMp4(
 
     const videoTimeSec = Math.min(totalVideoDurationSec, frameIdx / fps);
     const compositeCanvas = await renderFrameAtVideoTime(videoTimeSec);
+    const frameSourceCanvas = createScaledFrameCanvas(
+      compositeCanvas,
+      targetWidth,
+      targetHeight,
+      scaleCanvas
+    );
+    if (frameSourceCanvas !== compositeCanvas) {
+      scaleCanvas = frameSourceCanvas;
+    }
 
     // Backpressure relief if hardware encoder queue gets full
     while (encoder.encodeQueueSize > 10) {
@@ -152,12 +272,12 @@ async function exportWithWebCodecsMp4(
     }
 
     const timestampMicros = frameIdx * frameDurationMicros;
-    const videoFrame = new VideoFrame(compositeCanvas, {
+    const videoFrame = new VideoFrame(frameSourceCanvas, {
       timestamp: timestampMicros,
       duration: frameDurationMicros,
     });
 
-    const isKeyFrame = frameIdx % (fps * 2) === 0;
+    const isKeyFrame = frameIdx % keyFrameEvery === 0;
     encoder.encode(videoFrame, { keyFrame: isKeyFrame });
     videoFrame.close();
 
@@ -219,14 +339,28 @@ async function exportWithWebCodecsMp4(
 }
 
 async function exportWithMediaRecorder(
-  options: VideoExportOptions
+  options: VideoExportOptions,
+  targetWidth: number,
+  targetHeight: number,
+  bitrate: number,
+  fps: number
 ): Promise<{ blob: Blob; extension: 'mp4' | 'webm' }> {
-  const { fps, totalVideoDurationSec, renderFrameAtVideoTime, onProgress, signal } = options;
+  const { totalVideoDurationSec, renderFrameAtVideoTime, onProgress, signal } = options;
   const totalFrames = Math.max(1, Math.ceil(totalVideoDurationSec * fps));
   const startWallMs = performance.now();
 
-  const firstCanvas = await renderFrameAtVideoTime(0);
-  const stream = firstCanvas.captureStream(fps);
+  const firstComposite = await renderFrameAtVideoTime(0);
+  let scaleCanvas: HTMLCanvasElement | null = null;
+  const captureCanvas = createScaledFrameCanvas(
+    firstComposite,
+    targetWidth,
+    targetHeight,
+    scaleCanvas
+  );
+  if (captureCanvas !== firstComposite) {
+    scaleCanvas = captureCanvas;
+  }
+  const stream = captureCanvas.captureStream(fps);
 
   const mimeTypes = [
     'video/mp4;codecs=avc1',
@@ -241,7 +375,7 @@ async function exportWithMediaRecorder(
   const chunks: BlobPart[] = [];
   const recorder = new MediaRecorder(stream, {
     mimeType: selectedMime,
-    videoBitsPerSecond: 12_000_000,
+    videoBitsPerSecond: bitrate,
   });
 
   recorder.ondataavailable = (e) => {
@@ -266,7 +400,8 @@ async function exportWithMediaRecorder(
       throw new DOMException('Video export cancelled by user', 'AbortError');
     }
     const videoTimeSec = Math.min(totalVideoDurationSec, frameIdx / fps);
-    await renderFrameAtVideoTime(videoTimeSec);
+    const comp = await renderFrameAtVideoTime(videoTimeSec);
+    createScaledFrameCanvas(comp, targetWidth, targetHeight, scaleCanvas);
 
     const renderedFrames = frameIdx + 1;
     const elapsedRenderSec = (performance.now() - startWallMs) / 1000;

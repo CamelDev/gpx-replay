@@ -118,12 +118,14 @@ export const MAP_STYLE_OPTIONS: Record<MapStyleId, MapStyleOption> = {
   },
   street: {
     id: 'street',
-    label: 'Clean Street (OSM)',
-    description: 'Standard OpenStreetMap road map (No API key required)',
+    label: 'Clean Street (Esri)',
+    description: 'Detailed street map with roads and landmarks (No API key required)',
     style: createRasterStyle(
-      'OpenStreetMap Standard',
-      ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      '© OpenStreetMap contributors',
+      'Esri World Street Map',
+      [
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+      ],
+      '© Esri, HERE, Garmin, USGS, OpenStreetMap contributors',
       19,
       '#f8fafc'
     ),

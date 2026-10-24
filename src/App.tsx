@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   Bike,
   CheckCircle2,
   Compass,
@@ -36,8 +37,14 @@ import { StageCanvas, StageCanvasHandle } from './components/StageCanvas';
 import { PlaybackControls } from './components/PlaybackControls';
 import {
   exportFullHdVideo,
+  VIDEO_QUALITY_CONFIG,
+  VIDEO_RESOLUTION_CONFIG,
   VideoExportProgress,
+  VideoQualityPreset,
+  VideoResolutionId,
 } from './utils/videoExporter';
+
+const EXPORT_FPS = 30;
 
 export const App: React.FC = () => {
   const [track, setTrack] = useState<GpxTrackData>(() =>
@@ -65,9 +72,12 @@ export const App: React.FC = () => {
     followZoom: 14.5,
   });
 
-  // Full HD Video export state
+  // Video export state
   const [showExportModal, setShowExportModal] = useState(false);
-  const [exportFps, setExportFps] = useState<30 | 60>(30);
+  const [exportResolution, setExportResolution] =
+    useState<VideoResolutionId>('1080p');
+  const [exportQuality, setExportQuality] =
+    useState<VideoQualityPreset>('high');
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] =
     useState<VideoExportProgress | null>(null);
@@ -91,7 +101,8 @@ export const App: React.FC = () => {
         trimStart: track.trimRange.startIndex,
         trimEnd: track.trimRange.endIndex,
         speedMultiplier,
-        exportFps,
+        exportResolution,
+        exportQuality,
         cameraMode,
         overviewZoom: cameraMode === 'overview' ? effectiveZoom : null,
         mapStyleId,
@@ -103,7 +114,8 @@ export const App: React.FC = () => {
       track.trimRange.startIndex,
       track.trimRange.endIndex,
       speedMultiplier,
-      exportFps,
+      exportResolution,
+      exportQuality,
       cameraMode,
       effectiveZoom,
       mapStyleId,
@@ -227,7 +239,9 @@ export const App: React.FC = () => {
 
     try {
       const result = await exportFullHdVideo({
-        fps: exportFps,
+        fps: EXPORT_FPS,
+        resolution: exportResolution,
+        quality: exportQuality,
         totalVideoDurationSec,
         signal: abortController.signal,
         onProgress: (prog) => setExportProgress(prog),
@@ -263,7 +277,8 @@ export const App: React.FC = () => {
     }
   }, [
     currentRenderSignature,
-    exportFps,
+    exportQuality,
+    exportResolution,
     exportedVideoUrl,
     speedMultiplier,
     track.totalDurationSec,
@@ -512,7 +527,7 @@ export const App: React.FC = () => {
         </section>
       </main>
 
-      {/* Full HD (1920x1080) In-Browser Video Export Modal */}
+      {/* In-Browser Video Export Modal */}
       {showExportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
@@ -521,14 +536,9 @@ export const App: React.FC = () => {
                 <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-400">
                   <Film className="h-5 w-5" />
                 </div>
-                <div>
-                  <h3 className="text-base font-bold text-white">
-                    Generate Full HD (1920×1080) Video
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    Rendered 100% in your browser with burned-in telemetry HUD
-                  </p>
-                </div>
+                <h3 className="text-base font-bold text-white">
+                  Render video file
+                </h3>
               </div>
               {!isExporting && (
                 <button
@@ -541,31 +551,39 @@ export const App: React.FC = () => {
               )}
             </div>
 
-            {/* Export Configuration Summary */}
+            {/* Active Tab Performance Warning (shown right below title when rendering starts) */}
+            {isExporting && (
+              <div className="mt-4 flex animate-pulse items-center gap-2.5 rounded-xl border border-red-500/60 bg-red-500/20 px-3.5 py-2.5 text-xs font-semibold text-red-300">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-red-400" />
+                <span>Keep this browser tab active for best performance</span>
+              </div>
+            )}
+
+            {/* Export Controls */}
             <div className="mt-4 space-y-4">
               <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-800 bg-slate-950/70 p-3.5 text-xs">
                 <div>
                   <span className="text-slate-400">Resolution:</span>
-                  <div className="mt-0.5 font-mono font-bold text-emerald-300">
-                    1920 × 1080 (Full HD 16:9)
+                  <div className="mt-1 flex gap-1.5">
+                    {(['720p', '1080p'] as VideoResolutionId[]).map((resId) => (
+                      <button
+                        key={resId}
+                        type="button"
+                        disabled={isExporting}
+                        onClick={() => setExportResolution(resId)}
+                        className={`rounded-md px-2.5 py-1 font-mono text-xs font-bold transition ${
+                          exportResolution === resId
+                            ? 'bg-emerald-500 text-slate-950'
+                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                        }`}
+                      >
+                        {VIDEO_RESOLUTION_CONFIG[resId].shortLabel}
+                      </button>
+                    ))}
                   </div>
                 </div>
                 <div>
-                  <span className="text-slate-400">Trimmed Ride Duration:</span>
-                  <div className="mt-0.5 font-mono font-bold text-slate-100">
-                    {formatDurationHms(track.totalDurationSec)}
-                  </div>
-                </div>
-                <div className="col-span-2 flex items-center justify-between border-t border-slate-800/80 pt-2.5">
-                  <span className="text-slate-400">Camera &amp; Map Zoom:</span>
-                  <span className="font-mono font-bold text-sky-300">
-                    {cameraMode === 'follow'
-                      ? `Follow Rider • ${hudConfig.followZoom.toFixed(1)}z`
-                      : `Overview • ${effectiveZoom.toFixed(1)}z`}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-400">Playback Speed Multiplier:</span>
+                  <span className="text-slate-400">Playback Speed:</span>
                   <div className="mt-1 flex gap-1.5">
                     {([1, 2, 5, 10] as SpeedMultiplier[]).map((mult) => (
                       <button
@@ -584,24 +602,36 @@ export const App: React.FC = () => {
                     ))}
                   </div>
                 </div>
-                <div>
-                  <span className="text-slate-400">Frame Rate:</span>
+                <div className="col-span-2 border-t border-slate-800/80 pt-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Video Quality:</span>
+                    <span className="font-mono text-[11px] font-semibold text-sky-300">
+                      {Math.round(
+                        VIDEO_QUALITY_CONFIG[exportQuality].bitrateByRes[
+                          exportResolution
+                        ] / 1_000_000
+                      )}{' '}
+                      Mbps
+                    </span>
+                  </div>
                   <div className="mt-1 flex gap-1.5">
-                    {([30, 60] as const).map((fpsOpt) => (
-                      <button
-                        key={fpsOpt}
-                        type="button"
-                        disabled={isExporting}
-                        onClick={() => setExportFps(fpsOpt)}
-                        className={`rounded-md px-2.5 py-1 font-mono text-xs font-bold transition ${
-                          exportFps === fpsOpt
-                            ? 'bg-sky-500 text-slate-950'
-                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                        }`}
-                      >
-                        {fpsOpt} FPS
-                      </button>
-                    ))}
+                    {(['standard', 'high', 'ultra'] as VideoQualityPreset[]).map(
+                      (qPreset) => (
+                        <button
+                          key={qPreset}
+                          type="button"
+                          disabled={isExporting}
+                          onClick={() => setExportQuality(qPreset)}
+                          className={`flex-1 rounded-md px-2 py-1 font-mono text-xs font-bold transition ${
+                            exportQuality === qPreset
+                              ? 'bg-sky-500 text-slate-950'
+                              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                          }`}
+                        >
+                          {VIDEO_QUALITY_CONFIG[qPreset].label}
+                        </button>
+                      )
+                    )}
                   </div>
                 </div>
               </div>
@@ -611,9 +641,7 @@ export const App: React.FC = () => {
                   Resulting Video Length @ <strong>x{speedMultiplier}</strong>:
                 </span>
                 <span className="font-mono text-sm font-bold text-emerald-300">
-                  {formatDurationHms(track.totalDurationSec / speedMultiplier)} (
-                  {Math.ceil((track.totalDurationSec / speedMultiplier) * exportFps)}{' '}
-                  frames)
+                  {formatDurationHms(track.totalDurationSec / speedMultiplier)}
                 </span>
               </div>
 
@@ -677,11 +705,11 @@ export const App: React.FC = () => {
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-semibold text-slate-200 capitalize">
                         {exportProgress.phase === 'rendering'
-                          ? `Rendering Full HD Frames (${exportProgress.renderedFrames} / ${exportProgress.totalFrames})`
+                          ? `Rendering ${exportResolution.toUpperCase()} Frames (${exportProgress.renderedFrames} / ${exportProgress.totalFrames})`
                           : exportProgress.phase === 'finalizing'
                           ? 'Finalizing MP4 container...'
                           : exportProgress.phase === 'completed'
-                          ? 'Full HD Video Ready!'
+                          ? `${VIDEO_RESOLUTION_CONFIG[exportResolution].shortLabel} Video Ready!`
                           : exportProgress.phase}
                       </span>
                       <span className="font-mono font-bold text-emerald-400">
@@ -739,7 +767,7 @@ export const App: React.FC = () => {
                       <CheckCircle2 className="h-4 w-4" />
                       {hasParamsChangedSinceRender
                         ? `Previous Render (${exportedFileExt.toUpperCase()}) — Outdated Settings`
-                        : `Rendered 1920×1080 (${exportedFileExt.toUpperCase()}) successfully!`}
+                        : `Rendered ${VIDEO_RESOLUTION_CONFIG[exportResolution].width}×${VIDEO_RESOLUTION_CONFIG[exportResolution].height} (${exportedFileExt.toUpperCase()}) successfully!`}
                     </span>
                   </div>
                   <video
@@ -751,11 +779,12 @@ export const App: React.FC = () => {
                     href={exportedVideoUrl}
                     download={`${track.name
                       .toLowerCase()
-                      .replace(/[^a-z0-9]+/g, '-')}-${speedMultiplier}x-1080p.${exportedFileExt}`}
+                      .replace(/[^a-z0-9]+/g, '-')}-${speedMultiplier}x-${exportResolution}.${exportedFileExt}`}
                     className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400"
                   >
                     <Download className="h-4 w-4" />
-                    Download {hasParamsChangedSinceRender ? 'Previous ' : ''}Full HD Video (.{exportedFileExt})
+                    Download {hasParamsChangedSinceRender ? 'Previous ' : ''}
+                    {VIDEO_RESOLUTION_CONFIG[exportResolution].shortLabel} Video (.{exportedFileExt})
                   </a>
                 </div>
               )}
@@ -798,9 +827,9 @@ export const App: React.FC = () => {
                     <Film className="h-4 w-4" />
                     {exportedVideoUrl
                       ? hasParamsChangedSinceRender || showOverrideConfirm
-                        ? 'Override & Start New 1080p Render'
-                        : 'Re-Render 1080p Video'
-                      : 'Start 1080p Render'}
+                        ? `Override & Start New ${exportResolution} Render`
+                        : `Re-Render ${exportResolution} Video`
+                      : `Start ${exportResolution} Render`}
                   </button>
                 </>
               )}
